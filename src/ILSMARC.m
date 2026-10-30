@@ -12,6 +12,43 @@ ILSMARC ; m-ils MARCXML loader — MARC21 slim XML to tagged-line records
  ; Pure-string M parsing, $P-piece based; bounded loops only (no
  ; QUIT-in-FOR, one command per IF); runs under mJVM and GT.M.
  ;
+LOADFILE(kind,fn) ; stream a MARCXML file into the store (DO form). The
+ ; record count lands in ^ILS("TMP","ING") — GT.M forbids Q with argument
+ ; in a DOed label, and mJVM #37 dies silently with device ops inside an
+ ; extrinsic frame; top-level-style device loops are proven on both engines.
+ ; One <marc:record> block per run of lines, no blank lines (NLM slim output
+ ; meets both); EOF reads as "". No WRITEs inside the loop — the current
+ ; device stays the file until CLOSE returns to the principal.
+ N line,rec,n,r
+ S n=0
+ S rec=""
+ O fn:readonly
+ U fn
+LF1 ;
+ R line
+ I line="" G LFD
+ I rec="" D LF2
+ I rec'="" D LF3
+ G LF1
+LF2 ;
+ I line'["<marc:record " Q
+ S rec=line
+ Q
+ ;
+LF3 ;
+ S rec=rec_$C(10)_line
+ I line'["</marc:record>" Q
+ S r=$$LOADXML(kind,rec)
+ I r>0 S n=(n)+1
+ S rec=""
+ Q
+ ;
+LFD ;
+ C fn
+ U 0
+ S ^ILS("TMP","ING")=n
+ Q
+ ;
 LOADXML(kind,text) ; parse one <marc:record> body; returns field count
  N recid,chunk,attrs,tag,body,cnt,tot
  S chunk=$P(text,"<marc:controlfield tag=""001"">",2)
@@ -24,7 +61,7 @@ LOADXML(kind,text) ; parse one <marc:record> body; returns field count
  . S chunk=$P(text,"<marc:datafield ",2)
  . S attrs=$P(chunk,">",1)
  . S tag=$P(attrs,"""",2)
- . S body=$P(chunk,">",2)
+ . S body=$P(chunk,">",2,999)
  . S body=$P(body,"</marc:datafield>",1)
  . D FIELD(kind,recid,tag,body)
  . S text=$P(text,"</marc:datafield>",2,999)
@@ -34,6 +71,7 @@ FIELD(kind,recid,tag,body) ; map one datafield to internal tags
  I tag="245" D S245 Q
  I tag="022" D S022 Q
  I tag="260" D S260 Q
+ I tag="264" D S260 Q
  I tag="100" D SAU Q
  I tag="700" D SAU Q
  I tag="650" D SMH Q
