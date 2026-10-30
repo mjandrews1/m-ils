@@ -15,6 +15,7 @@ ILSTEST ; m-ils self-check battery — the project's conformance oracle
  D T11
  D T12
  D T13
+ D T14
  W !
  W "ILSTEST done"
  W !
@@ -112,4 +113,9 @@ T13 ; TUI show
  I W13'["Diabetes Management in Primary Care" D
  . W "T13 FAIL TUI show CAT 2"
  . W !
+ Q
+ ;
+T14 ; trailing-period normalization in authority lookup (Phase 0 finding)
+ D AUTHADD^ILSAUTH("D999999","Phase Zero Heading","Z99.999")
+ D CHK("T14","trailing-period lookup",$$AUTHBYNAME^ILSAUTH("Phase Zero Heading."),"D999999")
  Q

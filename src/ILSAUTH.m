@@ -17,9 +17,14 @@ AUTHADD(ui,name,tree) ; add an authority record
 FOLD(name) ; case-fold (upper) helper
  Q $ZCONVERT(name,"U")
  ;
-AUTHBYNAME(name) ; returns the UI for an exact name ("" when unknown)
- N ui
- S ui=$O(^ILS("ANAME",$$FOLD(name),""))
+AUTHBYNAME(name) ; returns the UI for an exact name ("" when unknown).
+ ; Lookup-side normalization (authority control convention): a single
+ ; trailing period is stripped before matching — MARC 650 headings carry
+ ; terminal punctuation the MeSH descriptor names do not.
+ N ui,n2
+ S n2=name
+ I $E(n2,$L(n2))="." S n2=$E(n2,1,($L(n2)-1))
+ S ui=$O(^ILS("ANAME",$$FOLD(n2),""))
  Q $G(ui)
  ;
 AUTHGET(ui) ; returns name for a UI ("" when unknown)
