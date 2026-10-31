@@ -21,6 +21,7 @@ MI1X ;
  K ^ILS("TMP","FN")
  D MESHING
  D VALALL
+ D REINDEX
  Q
  ;
 MILOOP ; one MARCXML file device loop — kind/fn set by the caller
