@@ -28,7 +28,7 @@ HTML(path) ; route to content (pure; testable under both engines)
 HEAD(page) ; page chrome
  Q "<html><head><title>m-ils</title></head><body>"_page_"<hr/><a href=""/"">index</a></body></html>"
  ;
-INDEX ;
+INDEX() ;
  Q $$HEAD("<h1>m-ils — demonstration ILS</h1><p>CATLINE bibliographic records, SERLINE serial records, MeSH authority control.</p><ul><li><a href=""/catalog"">CATLINE catalog</a></li><li><a href=""/serials"">SERLINE serials</a></li></ul>")
  ;
 LISTHTML(kind) ;
