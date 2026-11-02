@@ -9,6 +9,7 @@ ILSTUI ; m-ils TUI — command dispatcher (pure; the read loop is thin)
  ;
 DISPATCH(cmd) ;
  N verb,arg,arg2,parts
+ N rawcmd S rawcmd=cmd
  S cmd=$ZCONVERT(cmd,"U")
  I cmd["QUIT" Q "bye"
  S parts=$L(cmd," ")
@@ -26,14 +27,28 @@ DISPATCH(cmd) ;
  I verb="VALIDATE" Q $$VALINFO($G(arg),$G(arg2))
  I verb="LEDGER" Q $$LEDGER()
  I verb="RELATED" Q $$RELINFO($G(arg))
+ I verb="LOGIN" Q $$LOGINUI($P(rawcmd," ",2),$P(rawcmd," ",3))
+ I verb="LOANS" Q $$MYLOANS^ILSCIRC(^ILS("TMP","TOK"))
+ I verb="HOLDS" Q $$MYHOLDS^ILSCIRC(^ILS("TMP","TOK"))
+ I verb="ILL" Q $$MYILL^ILSILL(^ILS("TMP","TOK"))
  Q "unknown command (HELP for list)"
  ;
 HELP() ;
- Q "HELP DEMO LIST SHOW <kind> <id> AUTH <ui> MH <heading> FIND <word>"_$C(10)_"ISSN <issn> VALIDATE <kind> <id> LEDGER RELATED <ui> QUIT"
+ Q "HELP DEMO LIST SHOW <kind> <id> AUTH <ui> MH <heading> FIND <word>"_$C(10)_"ISSN <issn> VALIDATE <kind> <id> LEDGER RELATED <ui> QUIT"_$C(10)_"LOGIN <name> <pw> LOANS HOLDS ILL"
+ ;
+LOGINUI(name,pw) ; store session token in ^ILS("TMP","TOK"), return ok|role or err|login
+ N t
+ S t=$$LOGIN^ILSPAT(name,pw)
+ I t="" Q "err|login"
+ S ^ILS("TMP","TOK")=t
+ Q "ok|"_$$ROLE^ILSPAT(t)
  ;
 DEMOALL ;
  D DEMO^ILSREC
  D AUTHDEMO^ILSAUTH
+ D PATDEMO^ILSPAT
+ D CIRCDEMO^ILSCIRC
+ D ILLDEMO^ILSILL
  D REINDEX^ILSEARCH
  Q
  ;

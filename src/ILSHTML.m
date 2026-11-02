@@ -23,7 +23,28 @@ HTML(path) ; route to content (pure; testable under both engines)
  I $E(path,1,9)="/rec/SER/" Q $$RECHTML("SER",$E(path,10,$L(path)))
  I $E(path,1,6)="/auth/" Q $$AUTHHTML($E(path,7,$L(path)))
  I $E(path,1,8)="/search/" Q $$SEARCHHTML($E(path,9,$L(path)))
+ I $E(path,1,6)="/login" Q $$LOGINHTML($P(path,"?",2))
+ I path="/loans" Q $$LOANSHTML()
+ I path="/holds" Q $$HOLDSHTML()
+ I path="/ill" Q $$ILLHTML()
  Q "<html><body><h1>m-ils</h1><p>not found: "_path_"</p></body></html>"
+ ;
+LOGINHTML(qs) ; qs="n=name&p=pw" — stores session token, returns page
+ N n,p,t
+ S n=$P(qs,"&",1)
+ S p=$P(qs,"&",2)
+ S n=$P(n,"=",2)
+ S p=$P(p,"=",2)
+ S t=$$LOGIN^ILSPAT(n,p)
+ I t="" Q $$HEAD("<h1>login failed</h1>")
+ S ^ILS("TMP","TOK")=t
+ Q $$HEAD("<h1>logged in</h1><p>role: "_$$ROLE^ILSPAT(t)_"</p>")
+ ;
+LOANSHTML() Q $$HEAD("<h1>my loans</h1><pre>"_$$MYLOANS^ILSCIRC(^ILS("TMP","TOK"))_"</pre>")
+ ;
+HOLDSHTML() Q $$HEAD("<h1>my holds</h1><pre>"_$$MYHOLDS^ILSCIRC(^ILS("TMP","TOK"))_"</pre>")
+ ;
+ILLHTML() Q $$HEAD("<h1>my ILL</h1><pre>"_$$MYILL^ILSILL(^ILS("TMP","TOK"))_"</pre>")
  ;
 HEAD(page) ; page chrome
  Q "<html><head><title>m-ils</title></head><body>"_page_"<hr/><a href=""/"">index</a></body></html>"

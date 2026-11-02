@@ -619,7 +619,28 @@ HTML(path) ; route to content (pure; testable under both engines)
  I $E(path,1,9)="/rec/SER/" Q $$RECHTML("SER",$E(path,10,$L(path)))
  I $E(path,1,6)="/auth/" Q $$AUTHHTML($E(path,7,$L(path)))
  I $E(path,1,8)="/search/" Q $$SEARCHHTML($E(path,9,$L(path)))
+ I $E(path,1,6)="/login" Q $$LOGINHTML($P(path,"?",2))
+ I path="/loans" Q $$LOANSHTML()
+ I path="/holds" Q $$HOLDSHTML()
+ I path="/ill" Q $$ILLHTML()
  Q "<html><body><h1>m-ils</h1><p>not found: "_path_"</p></body></html>"
+ ;
+LOGINHTML(qs) ; qs="n=name&p=pw" — stores session token, returns page
+ N n,p,t
+ S n=$P(qs,"&",1)
+ S p=$P(qs,"&",2)
+ S n=$P(n,"=",2)
+ S p=$P(p,"=",2)
+ S t=$$LOGIN^ILSPAT(n,p)
+ I t="" Q $$HEAD("<h1>login failed</h1>")
+ S ^ILS("TMP","TOK")=t
+ Q $$HEAD("<h1>logged in</h1><p>role: "_$$ROLE^ILSPAT(t)_"</p>")
+ ;
+LOANSHTML() Q $$HEAD("<h1>my loans</h1><pre>"_$$MYLOANS^ILSCIRC(^ILS("TMP","TOK"))_"</pre>")
+ ;
+HOLDSHTML() Q $$HEAD("<h1>my holds</h1><pre>"_$$MYHOLDS^ILSCIRC(^ILS("TMP","TOK"))_"</pre>")
+ ;
+ILLHTML() Q $$HEAD("<h1>my ILL</h1><pre>"_$$MYILL^ILSILL(^ILS("TMP","TOK"))_"</pre>")
  ;
 HEAD(page) ; page chrome
  Q "<html><head><title>m-ils</title></head><body>"_page_"<hr/><a href=""/"">index</a></body></html>"
@@ -703,6 +724,7 @@ ILSTUI ; m-ils TUI — command dispatcher (pure; the read loop is thin)
  ;
 DISPATCH(cmd) ;
  N verb,arg,arg2,parts
+ N rawcmd S rawcmd=cmd
  S cmd=$ZCONVERT(cmd,"U")
  I cmd["QUIT" Q "bye"
  S parts=$L(cmd," ")
@@ -720,14 +742,28 @@ DISPATCH(cmd) ;
  I verb="VALIDATE" Q $$VALINFO($G(arg),$G(arg2))
  I verb="LEDGER" Q $$LEDGER()
  I verb="RELATED" Q $$RELINFO($G(arg))
+ I verb="LOGIN" Q $$LOGINUI($P(rawcmd," ",2),$P(rawcmd," ",3))
+ I verb="LOANS" Q $$MYLOANS^ILSCIRC(^ILS("TMP","TOK"))
+ I verb="HOLDS" Q $$MYHOLDS^ILSCIRC(^ILS("TMP","TOK"))
+ I verb="ILL" Q $$MYILL^ILSILL(^ILS("TMP","TOK"))
  Q "unknown command (HELP for list)"
  ;
 HELP() ;
- Q "HELP DEMO LIST SHOW <kind> <id> AUTH <ui> MH <heading> FIND <word>"_$C(10)_"ISSN <issn> VALIDATE <kind> <id> LEDGER RELATED <ui> QUIT"
+ Q "HELP DEMO LIST SHOW <kind> <id> AUTH <ui> MH <heading> FIND <word>"_$C(10)_"ISSN <issn> VALIDATE <kind> <id> LEDGER RELATED <ui> QUIT"_$C(10)_"LOGIN <name> <pw> LOANS HOLDS ILL"
+ ;
+LOGINUI(name,pw) ; store session token in ^ILS("TMP","TOK"), return ok|role or err|login
+ N t
+ S t=$$LOGIN^ILSPAT(name,pw)
+ I t="" Q "err|login"
+ S ^ILS("TMP","TOK")=t
+ Q "ok|"_$$ROLE^ILSPAT(t)
  ;
 DEMOALL ;
  D DEMO
  D AUTHDEMO
+ D PATDEMO^ILSPAT
+ D CIRCDEMO^ILSCIRC
+ D ILLDEMO^ILSILL
  D REINDEX
  Q
  ;
@@ -840,5 +876,380 @@ WJE ;
  G WJ1
 WJD ;
  C 22
+ Q
+ ;
+ILSPAT ; m-ils accounts & session auth (MVP expansion, m-ils#1, design doc docs/MVP-EXPANSION-DESIGN.md)
+ ; Stores:
+ ;   ^ILS("PAT",id,"NAME"|"EMAIL"|"ROLE"|"SALT"|"HASH"|"CREATED")=value
+ ;   ^ILSIDX("PATBYNAME",foldedname)=id
+ ;   ^ILS("SES",token)=patid_":"_expiryAbsSec
+ ;   ^ILS("SEQ","PAT")=lastId
+ ; HASH is a pure-M iterated mixer (NOT cryptographic — MVP grade; plaintext is
+ ; never stored). Pluggable: swap $$HASH/$$VERIFY to upgrade (e.g. gtmcrypt on
+ ; GT.M) without changing call sites.
+ ;
+NXTID(k) ; next id for counter ^ILS("SEQ",k) — shared by all modules
+ Q $I(^ILS("SEQ",k))
+ ;
+NOW() ; absolute seconds from $H (parenthesized mixed arithmetic)
+ Q ($P($H,",",1)*86400)+($P($H,",",2))
+ ;
+HASH(s) ; iterated mixer mod 2^31-1 (exact in double), 100 rounds; decimal string
+ ; GOTO loops (mJVM-safe; FOR bodies with >1 command hit mjvm#19)
+ N h,i,c,r
+ S h=2166136261
+ S i=0
+HL S i=i+1
+ I i>$L(s) G HR
+ S c=$A($E(s,i))
+ S h=(((h*31)+c)#2147483647)
+ G HL
+HR S r=0
+HR2 S r=r+1
+ I r>100 G HD
+ S h=(((h*31)+r)#2147483647)
+ G HR2
+HD Q $G(h)
+ ;
+FOLD(s) ; case-fold key
+ Q $ZCONVERT(s,"U")
+ ;
+VERIFY(id,password) ; 1 when password matches stored hash
+ Q $$HASH(^ILS("PAT",id,"SALT")_password)=^ILS("PAT",id,"HASH")
+ ;
+CREATEPAT(name,email,role,password) ; returns new id, or "" with ^ILS("TMP","ERR") set
+ N id,nm
+ S nm=$$FOLD(name)
+ I $D(^ILSIDX("PATBYNAME",nm)) S ^ILS("TMP","ERR")="name exists" Q ""
+ S id=$$NXTID("PAT")
+ S ^ILS("PAT",id,"NAME")=name
+ S ^ILS("PAT",id,"EMAIL")=email
+ S ^ILS("PAT",id,"ROLE")=role
+ S ^ILS("PAT",id,"SALT")=$$HASH($H_":"_$ZJOB_":"_id)
+ S ^ILS("PAT",id,"HASH")=$$HASH(^ILS("PAT",id,"SALT")_password)
+ S ^ILS("PAT",id,"CREATED")=$$NOW()
+ S ^ILSIDX("PATBYNAME",nm)=id
+ Q $G(id)
+ ;
+LOGIN(name,password) ; returns session token, "" on failure
+ N id,tok,e
+ S id=$G(^ILSIDX("PATBYNAME",$$FOLD(name)))
+ I id="" Q ""
+ I '$$VERIFY(id,password) Q ""
+ S tok=$$HASH(name_":"_$H_":"_$ZJOB_":"_id)
+ S e=$$NOW()+604800
+ S ^ILS("SES",tok)=id_":"_e
+ Q tok
+ ;
+CHECK(token) ; patid for a live session, "" otherwise (expired sessions removed)
+ N rec,e
+ S rec=$G(^ILS("SES",token))
+ I rec="" Q ""
+ S e=$P(rec,":",2)
+ I e<$$NOW() K ^ILS("SES",token) Q ""
+ Q $P(rec,":",1)
+ ;
+ROLE(token) ; "patron"|"librarian"|"" 
+ N id
+ S id=$$CHECK(token)
+ I id="" Q ""
+ Q $G(^ILS("PAT",id,"ROLE"))
+ ;
+CAN(token,action) ; role guard — the single enforcement point for mutating APIs
+ N role
+ S role=$$ROLE(token)
+ I role="librarian" Q 1
+ I role'="patron" Q 0
+ I action="view" Q 1
+ I action="myloans" Q 1
+ I action="myholds" Q 1
+ I action="myill" Q 1
+ I action="hold" Q 1
+ I action="illreq" Q 1
+ I action="renew" Q 1
+ Q 0
+ ;
+WHOAMI(token) ; "id|name|role" or ""
+ N id
+ S id=$$CHECK(token)
+ I id="" Q ""
+ Q id_"|"_^ILS("PAT",id,"NAME")_"|"_^ILS("PAT",id,"ROLE")
+ ;
+PATDEMO ; seed one patron + one librarian (ids 1,2 after a reset)
+ K ^ILS("PAT"),^ILSIDX("PATBYNAME"),^ILS("SES")
+ K ^ILS("SEQ","PAT")
+ N a,b
+ S a=$$CREATEPAT("Alice","alice@example.org","patron","pw")
+ S b=$$CREATEPAT("Lib","lib@example.org","librarian","lp")
+ Q
+ ;
+ILSCIRC ; m-ils circulation — minimum viable (MVP expansion, m-ils#1)
+ ; Stores:
+ ;   ^ILS("ITEM",barcode)=catid ; ^ILSIDX("ITEMBYBIB",catid,barcode)=""
+ ;   ^ILS("LOAN",id,"PATRON"|"ITEM"|"OUT"|"DUE"|"RETURNED"|"RENEWED")=v
+ ;   ^ILSIDX("LOANBYITEM",barcode,loanid)="" ; ^ILSIDX("LOANBYPAT",patid,loanid)=""
+ ;   ^ILS("HOLD",id,"PATRON"|"CATID"|"PLACED"|"STATUS")=v   STATUS queued|filled|cancelled
+ ;   ^ILSIDX("HOLDBYCAT",catid,placed,id)="" ; ^ILSIDX("HOLDBYPAT",patid,id)=""
+ ;   ^ILS("SEQ","LOAN") / ^ILS("SEQ","HOLD") counters
+ ; Rules (MVP): loan period = 14d default; renew once, blocked by a queued hold;
+ ; checkout blocked while an open loan exists; checkin fills the first queued hold.
+ ;
+LOANDAYS() Q 14
+ ;
+OPENLOAN(barcode) ; open loan id for item, "" if none
+ N id
+ S id=""
+OL1 S id=$O(^ILSIDX("LOANBYITEM",barcode,id))
+ I id="" Q ""
+ I $G(^ILS("LOAN",id,"RETURNED"))'="" G OL1
+ Q $G(id)
+ ;
+QUEUEDHOLD(catid) ; first queued hold id for bib (FIFO by PLACED), "" if none
+ N placed,id
+ S placed=$O(^ILSIDX("HOLDBYCAT",catid,""))
+ I placed="" Q ""
+ S id=""
+QH1 S id=$O(^ILSIDX("HOLDBYCAT",catid,placed,id))
+ I id="" Q ""
+ I $G(^ILS("HOLD",id,"STATUS"))="queued" Q $G(id)
+ G QH1
+ ;
+ADDITEM(token,catid,barcode) ; librarian: register a copy. Returns ok|barcode or err|...
+ I '$$CAN^ILSPAT(token,"manageitems") Q "err|auth"
+ I barcode="" Q "err|barcode"
+ I catid="" Q "err|catid"
+ I $D(^ILS("ITEM",barcode)) Q "err|exists"
+ S ^ILS("ITEM",barcode)=catid
+ S ^ILSIDX("ITEMBYBIB",catid,barcode)=""
+ Q "ok|"_barcode
+ ;
+ITEMS(catid) ; barcodes of a bib, |-joined
+ N out,bc
+ S out=""
+ S bc=""
+IT1 S bc=$O(^ILSIDX("ITEMBYBIB",catid,bc))
+ I bc="" Q $G(out)
+ I out="" S out=bc G IT1
+ S out=out_"|"_bc
+ G IT1
+ ;
+CHECKOUT(token,barcode) ; librarian or patron self-service per role guard
+ N lid,pat,now,due
+ I '$$CAN^ILSPAT(token,"checkout") Q "err|auth"
+ I '$D(^ILS("ITEM",barcode)) Q "err|noitem"
+ I $$OPENLOAN(barcode)'="" Q "err|onloan"
+ S lid=$$NXTID^ILSPAT("LOAN")
+ S pat=$$CHECK^ILSPAT(token)
+ S now=$$NOW^ILSPAT()
+ S due=now+($$LOANDAYS()*86400)
+ S ^ILS("LOAN",lid,"PATRON")=pat
+ S ^ILS("LOAN",lid,"ITEM")=barcode
+ S ^ILS("LOAN",lid,"OUT")=now
+ S ^ILS("LOAN",lid,"DUE")=due
+ S ^ILS("LOAN",lid,"RENEWED")=0
+ S ^ILSIDX("LOANBYITEM",barcode,lid)=""
+ S ^ILSIDX("LOANBYPAT",pat,lid)=""
+ Q "ok|"_lid
+ ;
+CHECKIN(token,barcode) ; librarian: close open loan, fill first queued hold
+ N lid,bib,hid
+ I '$$CAN^ILSPAT(token,"checkin") Q "err|auth"
+ S lid=$$OPENLOAN(barcode)
+ I lid="" Q "err|noloan"
+ S ^ILS("LOAN",lid,"RETURNED")=$$NOW^ILSPAT()
+ S bib=$G(^ILS("ITEM",barcode))
+ S hid=$$QUEUEDHOLD(bib)
+ I hid'="" S ^ILS("HOLD",hid,"STATUS")="filled"
+ Q "ok|"_lid
+ ;
+RENEW(token,loanid) ; owner-patron or librarian; once; blocked by queued hold
+ N pat,bib,hid
+ I '$$CAN^ILSPAT(token,"renew") Q "err|auth"
+ I $G(^ILS("LOAN",loanid,"RETURNED"))'="" Q "err|returned"
+ I $G(^ILS("LOAN",loanid,"RENEWED")) Q "err|renewed"
+ S pat=$$CHECK^ILSPAT(token)
+ I pat'=$G(^ILS("LOAN",loanid,"PATRON")) I $$ROLE^ILSPAT(token)'="librarian" Q "err|owner"
+ S bib=$G(^ILS("ITEM",$G(^ILS("LOAN",loanid,"ITEM"))))
+ S hid=$$QUEUEDHOLD(bib)
+ I hid'="" Q "err|holdqueued"
+ S ^ILS("LOAN",loanid,"DUE")=($G(^ILS("LOAN",loanid,"DUE")))+($$LOANDAYS()*86400)
+ S ^ILS("LOAN",loanid,"RENEWED")=1
+ Q "ok|"_loanid
+ ;
+HOLD(token,catid) ; patron places a hold on a bib
+ N hid,now,pat
+ I '$$CAN^ILSPAT(token,"hold") Q "err|auth"
+ S hid=$$NXTID^ILSPAT("HOLD")
+ S now=$$NOW^ILSPAT()
+ S pat=$$CHECK^ILSPAT(token)
+ S ^ILS("HOLD",hid,"PATRON")=pat
+ S ^ILS("HOLD",hid,"CATID")=catid
+ S ^ILS("HOLD",hid,"PLACED")=now
+ S ^ILS("HOLD",hid,"STATUS")="queued"
+ S ^ILSIDX("HOLDBYCAT",catid,now,hid)=""
+ S ^ILSIDX("HOLDBYPAT",pat,hid)=""
+ Q "ok|"_hid
+ ;
+ITEMSTATUS(barcode) ; available|on-loan|reserved|missing
+ N bib
+ I '$D(^ILS("ITEM",barcode)) Q "missing"
+ I $$OPENLOAN(barcode)'="" Q "on-loan"
+ S bib=$G(^ILS("ITEM",barcode))
+ I $$QUEUEDHOLD(bib)'="" Q "reserved"
+ I $$FILLEDHOLD(bib) Q "reserved"
+ Q "available"
+ ;
+FILLEDHOLD(catid) ; any filled hold for bib
+ N placed,id
+ S placed=$O(^ILSIDX("HOLDBYCAT",catid,""))
+ I placed="" Q 0
+ S id=""
+FH1 S id=$O(^ILSIDX("HOLDBYCAT",catid,placed,id))
+ I id="" Q 0
+ I $G(^ILS("HOLD",id,"STATUS"))="filled" Q 1
+ G FH1
+ ;
+MYLOANS(token) ; open loans of patron: "lid:barcode:due|..."
+ N pat,out,lid
+ S pat=$$CHECK^ILSPAT(token)
+ I pat="" Q ""
+ S out=""
+ S lid=""
+ML1 S lid=$O(^ILSIDX("LOANBYPAT",pat,lid))
+ I lid="" Q $G(out)
+ I $G(^ILS("LOAN",lid,"RETURNED"))'="" G ML1
+ I out="" S out=lid_":"_^ILS("LOAN",lid,"ITEM")_":"_^ILS("LOAN",lid,"DUE") G ML1
+ S out=out_"|"_lid_":"_^ILS("LOAN",lid,"ITEM")_":"_^ILS("LOAN",lid,"DUE")
+ G ML1
+ ;
+MYHOLDS(token) ; holds of patron: "hid:catid:status|..."
+ N pat,out,hid
+ S pat=$$CHECK^ILSPAT(token)
+ I pat="" Q ""
+ S out=""
+ S hid=""
+MH1 S hid=$O(^ILSIDX("HOLDBYPAT",pat,hid))
+ I hid="" Q $G(out)
+ I out="" S out=hid_":"_^ILS("HOLD",hid,"CATID")_":"_^ILS("HOLD",hid,"STATUS") G MH1
+ S out=out_"|"_hid_":"_^ILS("HOLD",hid,"CATID")_":"_^ILS("HOLD",hid,"STATUS")
+ G MH1
+ ;
+OVERDUE(token) ; librarian: "lid|barcode|patron|due|..." for open loans past due
+ N lid,out,now
+ I '$$CAN^ILSPAT(token,"overdue") Q "err|auth"
+ S now=$$NOW^ILSPAT()
+ S out=""
+ S lid=""
+OV1 S lid=$O(^ILS("LOAN",lid))
+ I lid="" Q $G(out)
+ I $G(^ILS("LOAN",lid,"RETURNED"))'="" G OV1
+ I ($G(^ILS("LOAN",lid,"DUE"))+0)>=now G OV1
+ I out="" S out=lid_"|"_^ILS("LOAN",lid,"ITEM")_"|"_^ILS("LOAN",lid,"PATRON")_"|"_^ILS("LOAN",lid,"DUE") G OV1
+ S out=out_"|"_lid_"|"_^ILS("LOAN",lid,"ITEM")_"|"_^ILS("LOAN",lid,"PATRON")_"|"_^ILS("LOAN",lid,"DUE")
+ G OV1
+ ;
+CIRCDEMO ; seed items for the demo records (CAT 1, CAT 2) — direct store writes
+ K ^ILS("ITEM"),^ILSIDX("ITEMBYBIB"),^ILS("LOAN"),^ILS("HOLD")
+ K ^ILSIDX("LOANBYITEM"),^ILSIDX("LOANBYPAT"),^ILSIDX("HOLDBYCAT"),^ILSIDX("HOLDBYPAT")
+ K ^ILS("SEQ","LOAN"),^ILS("SEQ","HOLD")
+ S ^ILS("ITEM","B1")=1
+ S ^ILSIDX("ITEMBYBIB",1,"B1")=""
+ S ^ILS("ITEM","B2")=1
+ S ^ILSIDX("ITEMBYBIB",1,"B2")=""
+ S ^ILS("ITEM","B3")=2
+ S ^ILSIDX("ITEMBYBIB",2,"B3")=""
+ Q
+ ;
+ILSILL ; m-ils ILL — minimum viable (MVP expansion, m-ils#1)
+ ; Stores:
+ ;   ^ILS("ILL",id,"DIR"|"PATRON"|"CATID"|"ITEM"|"PARTNER"|"STATUS"|"PLACED"|"SHIPPED"|"RECEIVED"|"RETURNED")=v
+ ;   DIR: out (we request) | in (we lend) ; STATUS: pending|shipped|received|returned|cancelled
+ ;   ^ILSIDX("ILLBYPAT",patid,reqid)="" ; ^ILSIDX("ILLQ",status,reqid)=""
+ ;   ^ILS("SEQ","ILL") counter
+ ; Legal transitions: out: pending->shipped->received->returned ; in: pending->shipped->returned ;
+ ; any: pending->cancelled. Transport: email-based MVP (PARTNER = address; UI renders the request).
+ ;
+LEGOUT(cur,ns) ; legal out-direction transition (M is strictly left-to-right: parenthesize each AND group)
+ Q ((cur="pending")&(ns="shipped"))!((cur="shipped")&(ns="received"))!((cur="received")&(ns="returned"))
+ ;
+LEGIN(cur,ns) ; legal in-direction transition
+ Q ((cur="pending")&(ns="shipped"))!((cur="shipped")&(ns="returned"))
+ ;
+LEGAL(cur,dir,ns) ; transition predicate: pending->cancelled always; else direction table
+ I ns="cancelled" Q (cur="pending")
+ I dir="out" Q $$LEGOUT(cur,ns)
+ I dir="in" Q $$LEGIN(cur,ns)
+ Q 0
+ ;
+ILLREQ(token,catid,partner) ; patron requests an item we don't hold
+ N id,now,pat
+ I '$$CAN^ILSPAT(token,"illreq") Q "err|auth"
+ S id=$$NXTID^ILSPAT("ILL")
+ S now=$$NOW^ILSPAT()
+ S pat=$$CHECK^ILSPAT(token)
+ S ^ILS("ILL",id,"DIR")="out"
+ S ^ILS("ILL",id,"PATRON")=pat
+ S ^ILS("ILL",id,"CATID")=catid
+ S ^ILS("ILL",id,"PARTNER")=partner
+ S ^ILS("ILL",id,"STATUS")="pending"
+ S ^ILS("ILL",id,"PLACED")=now
+ S ^ILSIDX("ILLBYPAT",pat,id)=""
+ S ^ILSIDX("ILLQ","pending",id)=""
+ Q "ok|"_id
+ ;
+ILLIN(token,barcode,partner) ; librarian records a loan of our item to a partner
+ N id,now
+ I '$$CAN^ILSPAT(token,"manageill") Q "err|auth"
+ S id=$$NXTID^ILSPAT("ILL")
+ S now=$$NOW^ILSPAT()
+ S ^ILS("ILL",id,"DIR")="in"
+ S ^ILS("ILL",id,"ITEM")=barcode
+ S ^ILS("ILL",id,"PARTNER")=partner
+ S ^ILS("ILL",id,"STATUS")="pending"
+ S ^ILS("ILL",id,"PLACED")=now
+ S ^ILSIDX("ILLQ","pending",id)=""
+ Q "ok|"_id
+ ;
+ILLSET(token,reqid,newstatus) ; librarian advances the lifecycle
+ N cur,dir,ok
+ I '$$CAN^ILSPAT(token,"manageill") Q "err|auth"
+ S cur=$G(^ILS("ILL",reqid,"STATUS"))
+ I cur="" Q "err|nosuch"
+ S dir=$G(^ILS("ILL",reqid,"DIR"))
+ S ok=$$LEGAL(cur,dir,newstatus)
+ I ok=0 Q "err|transition"
+ K ^ILSIDX("ILLQ",cur,reqid)
+ S ^ILS("ILL",reqid,"STATUS")=newstatus
+ S ^ILSIDX("ILLQ",newstatus,reqid)=""
+ I newstatus="shipped" S ^ILS("ILL",reqid,"SHIPPED")=$$NOW^ILSPAT()
+ I newstatus="received" S ^ILS("ILL",reqid,"RECEIVED")=$$NOW^ILSPAT()
+ I newstatus="returned" S ^ILS("ILL",reqid,"RETURNED")=$$NOW^ILSPAT()
+ Q "ok|"_reqid
+ ;
+MYILL(token) ; patron's ILL requests: "id:dir:status:partner|..."
+ N pat,out,id
+ S pat=$$CHECK^ILSPAT(token)
+ I pat="" Q ""
+ S out=""
+ S id=""
+MI1 S id=$O(^ILSIDX("ILLBYPAT",pat,id))
+ I id="" Q $G(out)
+ I out="" S out=id_":"_^ILS("ILL",id,"DIR")_":"_^ILS("ILL",id,"STATUS")_":"_^ILS("ILL",id,"PARTNER") G MI1
+ S out=out_"|"_id_":"_^ILS("ILL",id,"DIR")_":"_^ILS("ILL",id,"STATUS")_":"_^ILS("ILL",id,"PARTNER")
+ G MI1
+ ;
+ILLQUEUE(token) ; librarian: pending queue "id:dir:partner|..."
+ N out,id
+ I '$$CAN^ILSPAT(token,"manageill") Q "err|auth"
+ S out=""
+ S id=""
+IQ1 S id=$O(^ILSIDX("ILLQ","pending",id))
+ I id="" Q $G(out)
+ I out="" S out=id_":"_^ILS("ILL",id,"DIR")_":"_^ILS("ILL",id,"PARTNER") G IQ1
+ S out=out_"|"_id_":"_^ILS("ILL",id,"DIR")_":"_^ILS("ILL",id,"PARTNER")
+ G IQ1
+ ;
+ILLDEMO ; one demo ILL request
+ K ^ILS("ILL"),^ILSIDX("ILLBYPAT"),^ILSIDX("ILLQ"),^ILS("SEQ","ILL")
  Q
  ;

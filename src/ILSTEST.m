@@ -16,6 +16,12 @@ ILSTEST ; m-ils self-check battery — the project's conformance oracle
  D T12
  D T13
  D T14
+ D T15
+ D T16
+ D T17
+ D T18
+ D T19
+ D T20
  W !
  W "ILSTEST done"
  W !
@@ -30,10 +36,8 @@ CHK(tname,desc,got,want) ;
  . W !
  Q
  ;
-T01 ; demo seed
- D DEMO^ILSREC
- D AUTHDEMO^ILSAUTH
- D REINDEX^ILSEARCH
+T01 ; demo seed (DEMOALL also seeds patrons/items via PATDEMO/CIRCDEMO/ILLDEMO)
+ D DEMOALL^ILSTUI
  ; validate all six records (unrolled: mJVM #35 — comma value-list FOR)
  N vr
  S vr=$$VALIDATE^ILSAUTH(1,"CAT")
@@ -119,3 +123,79 @@ T14 ; trailing-period normalization in authority lookup (Phase 0 finding)
  D AUTHADD^ILSAUTH("D999999","Phase Zero Heading","Z99.999")
  D CHK("T14","trailing-period lookup",$$AUTHBYNAME^ILSAUTH("Phase Zero Heading."),"D999999")
  Q
+ ;
+T15 ; auth: demo patron login, bad password, bogus token
+ N a,b
+ S a=$$LOGIN^ILSPAT("Alice","pw")
+ S b=$$LOGIN^ILSPAT("Alice","nope")
+ D CHK("T15","patron login ok",$$CHECK^ILSPAT(a),1)
+ D CHK("T15b","bad password rejected",b,"")
+ D CHK("T15c","bogus token rejected",$$CHECK^ILSPAT("bogus"),"")
+ Q
+ ;
+T16 ; role guard + whoami
+ N p,l
+ S p=$$LOGIN^ILSPAT("Alice","pw")
+ S l=$$LOGIN^ILSPAT("Lib","lp")
+ D CHK("T16","patron cannot manage items",$$CAN^ILSPAT(p,"manageitems"),0)
+ D CHK("T16b","librarian can manage items",$$CAN^ILSPAT(l,"manageitems"),1)
+ D CHK("T16c","whoami patron",$$WHOAMI^ILSPAT(p),"1|Alice|patron")
+ Q
+ ;
+T17 ; items + checkout/checkin/item status
+ K ^ILS("ITEM"),^ILSIDX("ITEMBYBIB"),^ILS("LOAN"),^ILSIDX("LOANBYITEM"),^ILSIDX("LOANBYPAT"),^ILS("SEQ","LOAN")
+ N l,pa,r
+ S l=$$LOGIN^ILSPAT("Lib","lp")
+ S pa=$$LOGIN^ILSPAT("Alice","pw")
+ S r=$$ADDITEM^ILSCIRC(pa,1,"B1")
+ D CHK("T17","patron cannot add item",r,"err|auth")
+ S r=$$ADDITEM^ILSCIRC(l,1,"B1")
+ D CHK("T17b","librarian adds item",r,"ok|B1")
+ S r=$$CHECKOUT^ILSCIRC(l,"B1")
+ D CHK("T17c","checkout ok",r,"ok|1")
+ D CHK("T17d","status on-loan",$$ITEMSTATUS^ILSCIRC("B1"),"on-loan")
+ S r=$$CHECKIN^ILSCIRC(l,"B1")
+ D CHK("T17e","checkin ok",r,"ok|1")
+ D CHK("T17f","status available",$$ITEMSTATUS^ILSCIRC("B1"),"available")
+ Q
+ ;
+T18 ; holds + renew rules
+ K ^ILS("HOLD"),^ILSIDX("HOLDBYCAT"),^ILSIDX("HOLDBYPAT"),^ILS("SEQ","HOLD")
+ N l,pa,h,r
+ S l=$$LOGIN^ILSPAT("Lib","lp")
+ S pa=$$LOGIN^ILSPAT("Alice","pw")
+ S h=$$HOLD^ILSCIRC(pa,1)
+ D CHK("T18","hold placed",h,"ok|1")
+ S r=$$CHECKOUT^ILSCIRC(l,"B1")
+ D CHK("T18b","checkout with hold queued (advisory)",r,"ok|2")
+ S r=$$RENEW^ILSCIRC(l,2)
+ D CHK("T18c","renew blocked by queued hold",r,"err|holdqueued")
+ S r=$$CHECKIN^ILSCIRC(l,"B1")
+ D CHK("T18d","checkin fills hold",$G(^ILS("HOLD",1,"STATUS")),"filled")
+ D CHK("T18e","status reserved",$$ITEMSTATUS^ILSCIRC("B1"),"reserved")
+ Q
+ ;
+T19 ; ILL lifecycle + guards
+ K ^ILS("ILL"),^ILSIDX("ILLBYPAT"),^ILSIDX("ILLQ"),^ILS("SEQ","ILL")
+ N l,pa,r
+ S l=$$LOGIN^ILSPAT("Lib","lp")
+ S pa=$$LOGIN^ILSPAT("Alice","pw")
+ S r=$$ILLREQ^ILSILL(pa,2,"partner@example.org")
+ D CHK("T19","ill request placed",r,"ok|1")
+ S r=$$ILLSET^ILSILL(pa,1,"shipped")
+ D CHK("T19b","patron cannot advance ILL",r,"err|auth")
+ S r=$$ILLSET^ILSILL(l,1,"returned")
+ D CHK("T19c","illegal transition rejected",r,"err|transition")
+ S r=$$ILLSET^ILSILL(l,1,"shipped")
+ D CHK("T19d","pending->shipped ok",r,"ok|1")
+ D CHK("T19e","pending queue empty",$O(^ILSIDX("ILLQ","pending","")),"")
+ Q
+ ;
+T20 ; TUI verbs + web route
+ N r
+ S r=$$DISPATCH^ILSTUI("LOGIN Alice pw")
+ D CHK("T20","TUI login",r,"ok|patron")
+ D CHK("T20b","TUI loans empty",$$DISPATCH^ILSTUI("LOANS"),"")
+ D CHK("T20c","web /loans renders",$$HTML^ILSHTML("/loans")["my loans",1)
+ Q
+ ;
